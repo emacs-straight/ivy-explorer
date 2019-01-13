@@ -4,7 +4,7 @@
 
 ;; Author: Clemens Radermacher <clemera@posteo.net>
 ;; URL: https://github.com/clemera/ivy-explorer
-;; Version: 0.1.2
+;; Version: 0.1.3
 ;; Package-Requires: ((emacs "25") (ivy "0.10.0"))
 ;; Keywords: convenience, files, matching
 
@@ -163,10 +163,9 @@ Even for the same string.")
           (set-window-parameter ivy-explorer--window 'no-other-window t))
         (select-window ori)))))
 
-(defun ivy-explorer--lv-message (format-string &rest args)
-  "Set ivy explorer window contents to (`format' FORMAT-STRING ARGS)."
-  (let* ((str (apply #'format format-string args))
-         (n-lines (cl-count ?\n str))
+(defun ivy-explorer--lv-message (str)
+  "Set ivy explorer window contents to string STR."
+  (let* ((n-lines (cl-count ?\n str))
          deactivate-mark
          golden-ratio-mode)
     (with-selected-window (ivy-explorer--lv)
