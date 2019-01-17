@@ -4,7 +4,7 @@
 
 ;; Author: Clemens Radermacher <clemera@posteo.net>
 ;; URL: https://github.com/clemera/ivy-explorer
-;; Version: 0.1.3
+;; Version: 0.2.0
 ;; Package-Requires: ((emacs "25") (ivy "0.10.0"))
 ;; Keywords: convenience, files, matching
 
@@ -140,6 +140,40 @@ menu string as `cdr'."
   "When non-nil, `ivy-explorer--lv-message' will refresh.
 Even for the same string.")
 
+
+(defmacro ivy-explorer--lv-command (cmd)
+  `(defun ,(intern (format "%s-lv" (symbol-name cmd))) ()
+     (interactive)
+     (with-selected-window (minibuffer-window)
+       (call-interactively ',cmd)
+       (ivy--exhibit))))
+
+(defun ivy-explorer-select-mini ()
+  (interactive)
+  (select-window (minibuffer-window)))
+
+(defvar ivy-explorer-lv-mode-map
+  (let ((map (make-sparse-keymap)))
+    (prog1 map
+      (suppress-keymap map)
+      (define-key map (kbd "C-g") (defun ivy-explorer-lv-quit ()
+                                    (interactive)
+                                    (with-selected-window (minibuffer-window)
+                                      (minibuffer-keyboard-quit))))
+      (define-key map "n" (ivy-explorer--lv-command ivy-explorer-next))
+      (define-key map "p" (ivy-explorer--lv-command ivy-explorer-previous))
+      (define-key map "f" (ivy-explorer--lv-command ivy-explorer-forward))
+      (define-key map "b" (ivy-explorer--lv-command ivy-explorer-backward))
+      (define-key map (kbd "RET") (ivy-explorer--lv-command ivy-alt-done))
+      (define-key map (kbd "DEL") (ivy-explorer--lv-command ivy-backward-delete-char))
+      (define-key map (kbd "M-o") (ivy-explorer--lv-command ivy-explorer-dispatching-done))
+      (define-key map "," (ivy-explorer--lv-command ivy-explorer-avy))
+      (define-key map (kbd "C-x o") 'ivy-explorer-select-mini)
+      (define-key map (kbd "'") 'ivy-explorer-select-mini))))
+
+(define-minor-mode ivy-explorer-lv-mode
+  "Mode for buffer showing the grid.")
+
 (defun ivy-explorer--lv ()
   "Ensure that ivy explorer window is live and return it."
   (if (window-live-p ivy-explorer--window)
@@ -155,6 +189,7 @@ Even for the same string.")
             (switch-to-buffer buf)
           (switch-to-buffer " *ivy-explorer*")
           (set-window-hscroll ivy-explorer--window 0)
+          (ivy-explorer-lv-mode 1)
           (setq window-size-fixed t)
           (setq mode-line-format nil)
           (setq cursor-type nil)
@@ -207,61 +242,66 @@ Even for the same string.")
 (defun ivy-explorer-avy (&optional action)
   "Jump to one of the current candidates using `avy'.
 
-If called from code ACTION is the action to trigger afterwards."
+Files are opened and directories will be entered. When entering a
+directory `avy' is invoked again. Users can exit this navigation
+style with C-g.
+
+If called from code ACTION is the action to trigger afterwards,
+in this case `avy' is not invoked again."
   (interactive)
-  (with-selected-window (ivy-explorer--lv)
-    (unless (require 'avy nil 'noerror)
-    (error "Package avy isn't installed"))
-  (let* ((avy-all-windows nil)
-         (avy-keys (or (cdr (assq 'ivy-avy avy-keys-alist))
-                       avy-keys))
-         (avy-style (or (cdr (assq 'ivy-avy
-                                   avy-styles-alist))
-                        avy-style))
-         (count 0)
-         (candidate
-          (let ((candidates))
-            (save-excursion
-              (save-restriction
-                (narrow-to-region
-                 (window-start)
-                 (window-end))
-                (goto-char (point-min))
-                ;; ignore the first candidate if at ./
-                ;; this command is meant to be used for navigation
-                ;; navigate to same folder you are in makes no sense
-                (unless (looking-at "./")
-                  (push (cons (point)
-                              (selected-window))
-                        candidates)
-                  (put-text-property
-                   (point) (1+ (point)) 'ivy-explorer-count count))
-                (goto-char
-                 (or (next-single-property-change
-                      (point) 'mouse-face)
-                     (point-max)))
-                (while (< (point) (point-max))
-                  (unless (looking-at "[[:blank:]\r\n]\\|\\'")
-                    (cl-incf count)
-                    (put-text-property
-                     (point) (1+ (point)) 'ivy-explorer-count count)
-                    (push
-                     (cons (point)
-                           (selected-window))
-                     candidates))
-                  (goto-char
-                   (or (next-single-property-change
-                        (point)
-                        'mouse-face)
-                       (point-max))))))
-            (setq avy-action #'identity)
-            (avy--process
-             (nreverse candidates)
-             (avy--style-fn avy-style)))))
-    (when (number-or-marker-p candidate)
-      (ivy-set-index
-       (get-text-property candidate 'ivy-explorer-count))
-      (run-at-time 0 nil (or action 'ivy-alt-done))))))
+  (when (with-selected-window (ivy-explorer--lv)
+          (unless (require 'avy nil 'noerror)
+            (error "Package avy isn't installed"))
+          (let* ((avy-all-windows nil)
+                 (avy-keys (or (cdr (assq 'ivy-avy avy-keys-alist))
+                               avy-keys))
+                 (avy-style (or (cdr (assq 'ivy-avy
+                                           avy-styles-alist))
+                                avy-style))
+                 (count 0)
+                 (candidate
+                  (let ((candidates))
+                    (save-excursion
+                      (goto-char (point-min))
+                      ;; ignore the first candidate if at ./
+                      ;; this command is meant to be used for navigation
+                      ;; navigate to same folder you are in makes no sense
+                      (unless (looking-at "./")
+                        (push (cons (point)
+                                    (selected-window))
+                              candidates)
+                        (put-text-property
+                         (point) (1+ (point)) 'ivy-explorer-count count))
+                      (goto-char
+                       (or (next-single-property-change
+                            (point) 'mouse-face)
+                           (point-max)))
+                      (while (< (point) (point-max))
+                        (unless (looking-at "[[:blank:]\r\n]\\|\\'")
+                          (cl-incf count)
+                          (put-text-property
+                           (point) (1+ (point)) 'ivy-explorer-count count)
+                          (push
+                           (cons (point)
+                                 (selected-window))
+                           candidates))
+                        (goto-char
+                         (or (next-single-property-change
+                              (point)
+                              'mouse-face)
+                             (point-max)))))
+                    (setq avy-action #'identity)
+                    (avy--process
+                     (nreverse candidates)
+                     (avy--style-fn avy-style)))))
+            (when (number-or-marker-p candidate)
+              (prog1 candidate
+                (ivy-set-index
+                 (get-text-property candidate 'ivy-explorer-count))))))
+    (ivy--exhibit)
+    (funcall (or action #'ivy-alt-done))
+    (unless action
+      (ivy-explorer-avy))))
 
 ;; adapted from ivy-hydra
 
@@ -308,15 +348,20 @@ If called from code ACTION is the action to trigger afterwards."
      (lambda ()
        (let ((action (ivy-read-action)))
          (when action
-           (ivy-set-action (ivy-read-action))
+           (ivy-set-action action)
            (ivy-done)))))))
 
 (defun ivy-explorer-dired ()
-  "Open current directory in `dired'."
+  "Open current directory in `dired'.
+
+Move to file which was current on exit."
   (interactive)
-  (ivy--cd ivy--directory)
-  (ivy--exhibit)
-  (ivy-done))
+  (let ((curr (ivy-state-current ivy-last)))
+    (ivy--cd ivy--directory)
+    (ivy--exhibit)
+    (run-at-time 0 nil #'dired-goto-file
+                 (expand-file-name curr ivy--directory))
+    (ivy-done)))
 
 (defun ivy-explorer-next (arg)
   "Move cursor vertically down ARG candidates."
@@ -378,11 +423,19 @@ Call the permanent action if possible.")
 
 ;; * Ivy explorer mode
 
+(defun ivy-explorer-select-lv ()
+  (interactive)
+  (select-window (get-buffer-window " *ivy-explorer*")))
+
 (defvar ivy-explorer-map
   (let ((map (make-sparse-keymap)))
     (prog1 map
       (define-key map (kbd "C-x d") 'ivy-explorer-dired)
 
+      (define-key map (kbd "C-x o") 'ivy-explorer-select-lv)
+      (define-key map (kbd "'") 'ivy-explorer-select-lv)
+
+      (define-key map (kbd "M-o") 'ivy-explorer-dispatching-done)
       (define-key map (kbd "C-'") 'ivy-explorer-avy)
       (define-key map (kbd ",") 'ivy-explorer-avy)
       (define-key map (kbd ";") 'ivy-explorer-avy-dispatch)
@@ -422,6 +475,17 @@ Call the permanent action if possible.")
         (ivy-minibuffer-map (make-composed-keymap
                              ivy-explorer-map ivy-minibuffer-map)))
     (apply f args)))
+
+
+(defun ivy-explorer-dispatching-done ()
+  "Select one of the available actions and call `ivy-done'."
+  (interactive)
+  (let ((window (selected-window)))
+    (unwind-protect
+        (when (ivy-read-action)
+          (ivy-done))
+      (when (window-live-p window)
+        (window-resize nil (- 1 (window-height)))))))
 
 
 (defun ivy-explorer (&rest args)
