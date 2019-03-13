@@ -4,7 +4,7 @@
 
 ;; Author: Clemens Radermacher <clemera@posteo.net>
 ;; URL: https://github.com/clemera/ivy-explorer
-;; Version: 0.2.0
+;; Version: 0.3.1
 ;; Package-Requires: ((emacs "25") (ivy "0.10.0"))
 ;; Keywords: convenience, files, matching
 
@@ -67,15 +67,52 @@ Line is drawn between the ivy explorer window and the Echo Area."
   :group 'ivy-explorer
   :type 'boolean)
 
-(defcustom ivy-explorer-max-columns nil
-  "If given the maximal number of columns to use."
+(defcustom ivy-explorer-max-columns 5
+  "If given the maximal number of columns to use.
+
+If the grid does not fit on the screen the number of columns is
+adjusted to a lower number automatically."
   :group 'ivy-explorer
+  :type 'integer)
+
+(defcustom ivy-explorer-width (frame-width)
+  "Width used to display the grid."
   :type 'integer)
 
 (defcustom ivy-explorer-max-function #'ivy-explorer-max
   "Function which should return max number of canidates."
   :group 'ivy-explorer
   :type 'function)
+
+(defcustom ivy-explorer-message-function #'ivy-explorer--lv-message
+  "Function to be used for grid display.
+
+By default you can choose between `ivy-explorer--posframe' and
+`ivy-explorer--lv-message'."
+  :group 'ivy-explorer
+  :type 'function)
+
+(defcustom ivy-explorer-height ivy-height
+  "Height used if `ivy-explorer-message-function' has no dynamic height."
+  :type 'integer)
+
+(defcustom ivy-explorer-auto-init-avy nil
+  "Whether to load grid views with avy selection enabled by default."
+  :group 'ivy-explorer
+  :type 'boolean)
+
+(defcustom ivy-explorer-avy-handler-alist
+  (list (cons #'ivy-explorer--lv-message
+              #'ivy-explorer-avy-default-handler)
+        (cons #'ivy-explorer--posframe
+              #'ivy-explorer-avy-posframe-handler))
+  "Alist which maps message functions to avy handlers.
+
+The message functions are the candidates for
+`ivy-explorer-message-function'. When avy selection command is
+invoked the corresponding handler gets used."
+  :type '(alist :key-type function
+                :value-type function))
 
 (defface ivy-explorer-separator
   (if (featurep 'lv)
@@ -87,24 +124,75 @@ Only the background color is significant."
   :group 'ivy-explorer)
 
 
+(defvar ivy-explorer-map
+  (let ((map (make-sparse-keymap)))
+    (prog1 map
+      (define-key map (kbd "DEL") 'ivy-explorer-backward-delete-char)
+      (define-key map (kbd "C-j") 'ivy-explorer-alt-done)
+      (define-key map (kbd "C-x d") 'ivy-explorer-dired)
+
+      (define-key map (kbd "C-x o") 'ivy-explorer-select-lv)
+      (define-key map (kbd "'") 'ivy-explorer-select-lv)
+
+      (define-key map (kbd "M-o") 'ivy-explorer-dispatching-done)
+      (define-key map (kbd "C-'") 'ivy-explorer-avy)
+      (define-key map (kbd ",") 'ivy-explorer-avy)
+      (define-key map (kbd ";") 'ivy-explorer-avy-dispatch)
+      ;; TODO: create C-o ivy-explorer-hydra
+      (define-key map (kbd "C-f") 'ivy-explorer-forward)
+      (define-key map (kbd "C-b") 'ivy-explorer-backward)
+      (define-key map (kbd "C-M-f") 'ivy-explorer-forward-and-call)
+      (define-key map (kbd "C-M-b") 'ivy-explorer-backward-and-call)
+
+      (define-key map (kbd "C-a") 'ivy-explorer-bol)
+      (define-key map (kbd "C-e") 'ivy-explorer-eol)
+      (define-key map (kbd "C-M-a") 'ivy-explorer-bol-and-call)
+      (define-key map (kbd "C-M-e") 'ivy-explorer-eol-and-call)
+
+      (define-key map (kbd "C-n") 'ivy-explorer-next)
+      (define-key map (kbd "C-p") 'ivy-explorer-previous)
+      (define-key map (kbd "C-M-n") 'ivy-explorer-next-and-call)
+      (define-key map (kbd "C-M-p") 'ivy-explorer-previous-and-call)))
+  "Keymap used in the minibuffer for function/`ivy-explorer-mode'.")
+
+;; * Ivy settings
+
+(push '(ivy-explorer--display-function :cleanup ivy-explorer--cleanup)
+      ivy-display-functions-props)
+
+(defvar ivy-explorer--posframe-buffer
+  " *ivy-explorer-pos-frame-buffer*")
+
+(defun ivy-explorer--cleanup ()
+  (when (and ivy-explorer-mode
+             (eq ivy-explorer-message-function
+                 #'ivy-explorer--posframe)
+             (string-match "posframe"
+                           (symbol-name ivy-explorer-message-function)))
+    (posframe-hide ivy-explorer--posframe-buffer)))
+
 ;; * Ivy explorer menu
 
 (defvar ivy-explorer--col-n nil
   "Current columns size of grid.")
 
-(defun ivy-explorer--get-menu-string (strings &optional cols width)
+(defvar ivy-explorer--row-n nil
+  "Current row size of grid.")
+
+(defun ivy-explorer--get-menu-string (strings cols &optional width)
   "Given a list of STRINGS create a menu string.
 
-The menu string will be segmented into columns. If COLS is given
-use at max COLS columns (defaults to 4). Decision for number of
-columns is based on WIDTH which default to frame width. Returns a
-cons cell with the number of columns created as the `car' and the
-menu string as `cdr'."
+The menu string will be segmented into columns. COLS is the
+maximum number of columns to use. Decisions to use less number of
+columns is based on WIDTH which defaults to frame width. Returns
+a cons cell with the (columns . rows) created as the `car' and
+the menu string as `cdr'."
   (with-temp-buffer
     (let* ((length (apply 'max
                           (mapcar #'string-width strings)))
            (wwidth (or width (frame-width)))
-           (columns (min (or cols 4) (/ wwidth (+ 2 length))))
+           (columns (min cols (/ wwidth (+ 2 length))))
+           (rows 1)
            (colwidth (/ wwidth columns))
            (column 0)
            (first t)
@@ -117,6 +205,7 @@ menu string as `cdr'."
               (if (or (< wwidth (+ (max colwidth length) column))
                       (zerop length))
                   (progn
+                    (cl-incf rows)
                     (insert "\n" (if (zerop length) "\n" ""))
                     (setq column 0))
                 (insert " \t")
@@ -126,7 +215,7 @@ menu string as `cdr'."
             (insert str)
             (setq column (+ column
                             (* colwidth (ceiling length colwidth)))))))
-      (cons columns (buffer-string)))))
+      (cons (cons columns rows) (buffer-string)))))
 
 ;; * Ivy explorer window, adapted from lv.el
 
@@ -135,11 +224,6 @@ menu string as `cdr'."
 
 (defvar ivy-explorer--window nil
   "Holds the current ivy explorer window.")
-
-(defvar ivy-explorer-lv-force-update nil
-  "When non-nil, `ivy-explorer--lv-message' will refresh.
-Even for the same string.")
-
 
 (defmacro ivy-explorer--lv-command (cmd)
   `(defun ,(intern (format "%s-lv" (symbol-name cmd))) ()
@@ -201,11 +285,11 @@ Even for the same string.")
 (defun ivy-explorer--lv-message (str)
   "Set ivy explorer window contents to string STR."
   (let* ((n-lines (cl-count ?\n str))
+         (window-size-fixed nil)
          deactivate-mark
          golden-ratio-mode)
     (with-selected-window (ivy-explorer--lv)
-      (unless (and (string= (buffer-string) str)
-                   (null ivy-explorer-lv-force-update))
+      (unless (string= (buffer-string) str)
         (delete-region (point-min) (point-max))
         (insert str)
         (when (and (window-system) ivy-explorer-use-separator)
@@ -230,13 +314,154 @@ Even for the same string.")
       (delete-window ivy-explorer--window)
       (kill-buffer buf))))
 
-(defun ivy-explorer--message (message)
-  "Show MESSAGE in `ivy-explorer--window'."
-  (let ((ivy-explorer-lv-force-update t)
-        (window-size-fixed nil))
-    (ivy-explorer--lv-message message)))
+
+(defun ivy-explorer--posframe (msg)
+  (unless (require 'posframe nil t)
+    (user-error "Posframe library not found"))
+  (with-selected-window (ivy--get-window ivy-last)
+    (posframe-show
+     ivy-explorer--posframe-buffer
+     :string
+     (with-current-buffer (get-buffer-create " *Minibuf-1*")
+       (let ((point (point))
+             (string (concat (buffer-string) "  \n" msg)))
+         (add-text-properties (- point 1) point '(face (:inherit cursor))
+                              string)
+         string))
+     :poshandler (lambda (info)
+                   (cons (frame-parameter nil 'left-fringe)
+                         (- 0
+                            ;; TODO: calculate based on ivy-explorer-height
+                            (plist-get info :mode-line-height)
+                            (plist-get info :minibuffer-height))))
+     :background-color (or (and (facep 'ivy-posframe)
+                                (face-attribute 'ivy-posframe :background))
+                           (face-attribute 'fringe :background))
+     :foreground-color (or (and (facep 'ivy-posframe)
+                                (face-attribute 'ivy-posframe :foreground)
+                                (face-attribute 'default :foreground)))
+     :internal-border-width (or (and (bound-and-true-p ivy-posframe-border-width)
+                                     ivy-posframe-border-width)
+                                0)
+     :height ivy-explorer-height
+     :left-fringe (frame-parameter nil 'left-fringe)
+     :right-fringe (frame-parameter nil 'right-fringe)
+     :width (frame-width))))
+
 
 ;; * Minibuffer commands
+
+(defun ivy-explorer--ace-handler (char)
+  "Execute buffer-expose action for CHAR."
+  (cond ((memq char '(27 ?\C-g ?,))
+         ;; exit silently
+         (throw 'done 'exit))
+        ((mouse-event-p char)
+         (signal 'user-error (list "Mouse event not handled" char)))
+        (t
+         (require 'edmacro)
+         (let* ((key (kbd (edmacro-format-keys (vector char))))
+                (cmd (or (lookup-key ivy-explorer-map key)
+                         (key-binding key))))
+           (if (commandp cmd)
+               (progn (call-interactively cmd)
+                      (run-at-time 0 nil #'ivy--exhibit)
+                      (throw 'done 'exit))
+             (message "No such candidate: %s, hit `C-g' to quit."
+                      (if (characterp char) (string char) char))
+             (throw 'done 'restart))))))
+
+
+(defvar avy-all-windows)
+(defvar avy-keys)
+(defvar avy-keys-alist)
+(defvar avy-style)
+(defvar avy-styles-alist)
+(defvar avy-action)
+(defun ivy-explorer--avy ()
+  (let* ((avy-all-windows nil)
+         (avy-keys (or (cdr (assq 'ivy-avy avy-keys-alist))
+                       avy-keys))
+         (avy-handler-function #'ivy-explorer--ace-handler)
+         (avy-pre-action #'ignore)
+         (avy-style (or (cdr (assq 'ivy-avy
+                                   avy-styles-alist))
+                        avy-style))
+         (avy-action #'identity)
+         (handler (cdr (assq ivy-explorer-message-function
+                             ivy-explorer-avy-handler-alist)))
+         (success (if handler (funcall handler)
+                    (user-error "No handler for %s found in `ivy-explorer-avy-handler-alist'"
+                                ivy-explorer-message-function))))
+    success))
+
+(defun ivy-explorer-avy-default-handler ()
+  (let* ((w (ivy-explorer--lv))
+         (b (window-buffer w)))
+    (with-selected-window w
+      (ivy-explorer--avy-1 b))))
+
+(defun ivy-explorer-avy-posframe-handler ()
+  (let* ((b ivy-explorer--posframe-buffer)
+         (w (frame-selected-window
+             (buffer-local-value 'posframe--frame
+                                 (get-buffer b)))))
+    (with-selected-window w
+      (ivy-explorer--avy-1 b (with-current-buffer b
+                               (save-excursion
+                                 (goto-char (point-min))
+                                 (forward-line 1)
+                                 (point)))
+                           (window-end w)))))
+
+(defun ivy-explorer--avy-1 (&optional buffer start end)
+  (let ((candidate (avy--process
+                    (ivy-explorer--parse-avy-buffer buffer start end)
+                    (avy--style-fn avy-style))))
+    (when (number-or-marker-p candidate)
+      (prog1 t
+        (ivy-set-index
+         (get-text-property candidate 'ivy-explorer-count))))))
+
+(defun ivy-explorer--parse-avy-buffer (&optional buffer start end)
+  (let ((count 0)
+        (candidates ())
+        (start (or start (point-min)))
+        (end (or end (point-max))))
+    (with-current-buffer (or buffer (current-buffer))
+      (save-excursion
+        (save-restriction
+          (narrow-to-region start end)
+          (goto-char (point-min))
+          ;; ignore the first candidate if at ./
+          ;; this command is meant to be used for navigation
+          ;; navigate to same folder you are in makes no sense
+          (unless (search-forward "./" nil t)
+            (push (cons (point)
+                        (selected-window))
+                  candidates)
+            (put-text-property
+             (point) (1+ (point)) 'ivy-explorer-count count))
+          (goto-char
+           (or (next-single-property-change
+                (point) 'mouse-face)
+               (point-max)))
+          (while (< (point) (point-max))
+            (unless (looking-at "[[:blank:]\r\n]\\|\\'")
+              (cl-incf count)
+              (put-text-property
+               (point) (1+ (point)) 'ivy-explorer-count count)
+              (push
+               (cons (point)
+                     (selected-window))
+               candidates))
+            (goto-char
+             (or (next-single-property-change
+                  (point)
+                  'mouse-face)
+                 (point-max)))))))
+    (nreverse candidates)))
+
 
 ;; Ivy explorer avy, adapted from ivy-avy
 (defun ivy-explorer-avy (&optional action)
@@ -249,63 +474,13 @@ style with C-g.
 If called from code ACTION is the action to trigger afterwards,
 in this case `avy' is not invoked again."
   (interactive)
-  (when (with-selected-window (ivy-explorer--lv)
-          (unless (require 'avy nil 'noerror)
-            (error "Package avy isn't installed"))
-          (let* ((avy-all-windows nil)
-                 (avy-keys (or (cdr (assq 'ivy-avy avy-keys-alist))
-                               avy-keys))
-                 (avy-style (or (cdr (assq 'ivy-avy
-                                           avy-styles-alist))
-                                avy-style))
-                 (count 0)
-                 (candidate
-                  (let ((candidates))
-                    (save-excursion
-                      (goto-char (point-min))
-                      ;; ignore the first candidate if at ./
-                      ;; this command is meant to be used for navigation
-                      ;; navigate to same folder you are in makes no sense
-                      (unless (looking-at "./")
-                        (push (cons (point)
-                                    (selected-window))
-                              candidates)
-                        (put-text-property
-                         (point) (1+ (point)) 'ivy-explorer-count count))
-                      (goto-char
-                       (or (next-single-property-change
-                            (point) 'mouse-face)
-                           (point-max)))
-                      (while (< (point) (point-max))
-                        (unless (looking-at "[[:blank:]\r\n]\\|\\'")
-                          (cl-incf count)
-                          (put-text-property
-                           (point) (1+ (point)) 'ivy-explorer-count count)
-                          (push
-                           (cons (point)
-                                 (selected-window))
-                           candidates))
-                        (goto-char
-                         (or (next-single-property-change
-                              (point)
-                              'mouse-face)
-                             (point-max)))))
-                    (setq avy-action #'identity)
-                    (avy--process
-                     (nreverse candidates)
-                     (avy--style-fn avy-style)))))
-            (when (number-or-marker-p candidate)
-              (prog1 candidate
-                (ivy-set-index
-                 (get-text-property candidate 'ivy-explorer-count))))))
+  (unless (require 'avy nil 'noerror)
+    (error "Package avy isn't installed"))
+  (when (ivy-explorer--avy)
     (ivy--exhibit)
-    (funcall (or action #'ivy-alt-done))
-    (unless action
-      (ivy-explorer-avy))))
+    (funcall (or action #'ivy-alt-done))))
 
 ;; adapted from ivy-hydra
-
-
 (defun ivy-explorer-avy-dispatching-done-hydra ()
   "Choose action and afterwards target using `hydra'."
   (interactive)
@@ -346,11 +521,16 @@ in this case `avy' is not invoked again."
        'ivy-explorer-avy-dispatching-done-hydra)
     (ivy-explorer-avy
      (lambda ()
-       (let ((action (ivy-read-action)))
+       (let ((action (if (get-buffer ivy-explorer--posframe-buffer)
+                         (progn (unless (require 'ivy-posframe nil t)
+                                  (user-error "Ivy posframe not found"))
+                                (ivy-posframe-read-action))
+                       (ivy-read-action))))
          (when action
            (ivy-set-action action)
            (ivy-done)))))))
 
+(declare-function dired-goto-file "ext:dired")
 (defun ivy-explorer-dired ()
   "Open current directory in `dired'.
 
@@ -377,8 +557,39 @@ Move to file which was current on exit."
          (min colmax
               (+ ivy--index n)))))))
 
+(defun ivy-explorer-eol ()
+  "Move cursor to last column."
+  (interactive)
+  (let ((ci (% ivy--index ivy-explorer--col-n)))
+    (ivy-explorer-forward (- (1- ivy-explorer--col-n) ci))))
+
+(defun ivy-explorer-eol-and-call ()
+  "Move cursor to last column.
+
+Call the permanent action if possible."
+  (interactive)
+  (ivy-explorer-eol)
+  (ivy--exhibit)
+  (ivy-call))
+
+(defun ivy-explorer-bol ()
+  "Move cursor to first column."
+  (interactive)
+  (let ((ci (% ivy--index ivy-explorer--col-n)))
+    (ivy-explorer-backward ci)))
+
+(defun ivy-explorer-bol-and-call ()
+  "Move cursor to first column.
+
+Call the permanent action if possible."
+  (interactive)
+  (ivy-explorer-bol)
+  (ivy--exhibit)
+  (ivy-call))
+
 (defun ivy-explorer-next-and-call (arg)
   "Move cursor down ARG candidates.
+
 Call the permanent action if possible."
   (interactive "p")
   (ivy-explorer-next arg)
@@ -413,6 +624,25 @@ Call the permanent action if possible."
 (defalias 'ivy-explorer-backward #'ivy-previous-line
   "Move cursor backward ARG candidates.")
 
+(defun ivy-explorer-alt-done ()
+  "Like `ivy-alt-done' but respecting `ivy-explorer-auto-init-avy'."
+  (interactive)
+  (with-selected-window (minibuffer-window)
+    (call-interactively 'ivy-alt-done)
+    (when ivy-explorer-auto-init-avy
+      (ivy-explorer-avy))))
+
+(defun ivy-explorer-backward-delete-char ()
+  "Like `ivy-backward-delete-char' but respecting `ivy-explorer-auto-init-avy'."
+  (interactive)
+  (with-selected-window (minibuffer-window)
+    (if (and ivy--directory (= (minibuffer-prompt-end) (point)))
+        (progn (call-interactively 'ivy-backward-delete-char)
+               (when ivy-explorer-auto-init-avy
+                 (ivy-explorer-avy)))
+      (call-interactively 'ivy-backward-delete-char))))
+
+
 (defalias 'ivy-explorer-forward-and-call #'ivy-next-line-and-call
   "Move cursor forward ARG candidates.
 Call the permanent action if possible.")
@@ -427,29 +657,6 @@ Call the permanent action if possible.")
   (interactive)
   (select-window (get-buffer-window " *ivy-explorer*")))
 
-(defvar ivy-explorer-map
-  (let ((map (make-sparse-keymap)))
-    (prog1 map
-      (define-key map (kbd "C-x d") 'ivy-explorer-dired)
-
-      (define-key map (kbd "C-x o") 'ivy-explorer-select-lv)
-      (define-key map (kbd "'") 'ivy-explorer-select-lv)
-
-      (define-key map (kbd "M-o") 'ivy-explorer-dispatching-done)
-      (define-key map (kbd "C-'") 'ivy-explorer-avy)
-      (define-key map (kbd ",") 'ivy-explorer-avy)
-      (define-key map (kbd ";") 'ivy-explorer-avy-dispatch)
-      ;; TODO: create C-o ivy-explorer-hydra
-      (define-key map (kbd "C-f") 'ivy-explorer-forward)
-      (define-key map (kbd "C-b") 'ivy-explorer-backward)
-      (define-key map (kbd "C-M-f") 'ivy-explorer-forward-and-call)
-      (define-key map (kbd "C-M-b") 'ivy-explorer-backward-and-call)
-      (define-key map (kbd "C-n") 'ivy-explorer-next)
-      (define-key map (kbd "C-p") 'ivy-explorer-previous)
-      (define-key map (kbd "C-M-n") 'ivy-explorer-next-and-call)
-      (define-key map (kbd "C-M-p") 'ivy-explorer-previous-and-call)))
-  "Keymap used in the minibuffer for function/`ivy-explorer-mode'.")
-
 (defun ivy-explorer-max ()
   "Default for `ivy-explorer-max-function'."
   (* 2 (frame-height)))
@@ -459,33 +666,80 @@ Call the permanent action if possible.")
   (let* ((strings (or (split-string text "\n" t)
                       (list "")))
          (menu (ivy-explorer--get-menu-string
-                strings ivy-explorer-max-columns))
-         (mcols (car menu))
+                strings ivy-explorer-max-columns ivy-explorer-width))
+         (mcols (caar menu))
+         (mrows (cdar menu))
          (mstring (cdr menu)))
     (setq ivy-explorer--col-n mcols)
-    (ivy-explorer--message mstring)))
+    (setq ivy-explorer--row-n mrows)
+    (funcall ivy-explorer-message-function mstring)))
+
+
+(defun ivy-explorer-read (prompt coll &optional avy msgf mcols width height)
+  "Read value from an explorer grid.
+
+PROMPT and COLL are the same as for `ivy-read'. If AVY is non-nil
+the grid is initilized with avy selection.
+
+MCOLS is the number of columns to use. If the grid does not fit
+on the screen the number of columns is adjusted to a lower number
+automatically. If not given the the value is calculated
+by (/ (frame-width) 30)
+
+WIDTH is the width to be used to create the grid and defaults to
+frame-width.
+
+Height is the height for the grid display and defaults to
+ivy-height.
+
+MSGF is the function to be called with the grid string and defaults to
+`ivy-explorer-message-function.'"
+  (let ((ivy-explorer-message-function (or msgf ivy-explorer-message-function))
+        (ivy-explorer-max-columns (or mcols (/ (frame-width) 30)))
+        (ivy-wrap nil)
+        (ivy-explorer-height (or height ivy-explorer-height))
+        (ivy-explorer-width (or width (frame-width)))
+        (ivy-height (funcall ivy-explorer-max-function))
+        (ivy-display-function #'ivy-explorer--display-function)
+        (ivy-posframe-hide-minibuffer
+         (eq ivy-explorer-message-function #'ivy-explorer--posframe))
+        (ivy-minibuffer-map (make-composed-keymap
+                             ivy-explorer-map ivy-minibuffer-map)))
+    (when avy
+      (run-at-time 0 nil 'ivy-explorer-avy))
+    (ivy-read prompt coll)))
+
 
 (defun ivy-explorer--internal (f &rest args)
   "Invoke ivy explorer for F with ARGS."
-  (let ((ivy-display-function  #'ivy-explorer--display-function)
+  (let ((ivy-display-function #'ivy-explorer--display-function)
         (completing-read-function 'ivy-completing-read)
+        (ivy-posframe-hide-minibuffer
+         (eq ivy-explorer-message-function #'ivy-explorer--posframe))
         ;; max number of candidates
         (ivy-height (funcall ivy-explorer-max-function))
         (ivy-wrap nil)
         (ivy-minibuffer-map (make-composed-keymap
                              ivy-explorer-map ivy-minibuffer-map)))
+    (when ivy-explorer-auto-init-avy
+      (run-at-time 0 nil 'ivy-explorer-avy))
     (apply f args)))
 
 
 (defun ivy-explorer-dispatching-done ()
   "Select one of the available actions and call `ivy-done'."
   (interactive)
-  (let ((window (selected-window)))
-    (unwind-protect
-        (when (ivy-read-action)
-          (ivy-done))
-      (when (window-live-p window)
-        (window-resize nil (- 1 (window-height)))))))
+  (cond ((get-buffer ivy-explorer--posframe-buffer)
+         (unless (require 'ivy-posframe nil t)
+           (user-error "Ivy posframe not found"))
+         (ivy-posframe-dispatching-done))
+        (t
+         (let ((window (selected-window)))
+           (unwind-protect
+               (when (ivy-read-action)
+                 (ivy-done))
+             (when (window-live-p window)
+               (window-resize nil (- 1 (window-height)))))))))
 
 
 (defun ivy-explorer (&rest args)
@@ -522,6 +776,7 @@ INITIAL-INPUT is passed to `counsel-find-file'."
 (defvar ivy-explorer--default nil
   "Saves user configured `read-file-name-function'.")
 
+
 ;;;###autoload
 (define-minor-mode ivy-explorer-mode
   "Globally enable `ivy-explorer' for file navigation.
@@ -549,3 +804,8 @@ See `ivy-explorer-map' for bindings used in the minibuffer."
 
 (provide 'ivy-explorer)
 ;;; ivy-explorer.el ends here
+
+
+
+
+
