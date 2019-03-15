@@ -4,7 +4,7 @@
 
 ;; Author: Clemens Radermacher <clemera@posteo.net>
 ;; URL: https://github.com/clemera/ivy-explorer
-;; Version: 0.3.1
+;; Version: 0.3.2
 ;; Package-Requires: ((emacs "25") (ivy "0.10.0"))
 ;; Keywords: convenience, files, matching
 
@@ -157,8 +157,9 @@ Only the background color is significant."
 
 ;; * Ivy settings
 
-(push '(ivy-explorer--display-function :cleanup ivy-explorer--cleanup)
-      ivy-display-functions-props)
+(when (bound-and-true-p ivy-display-functions-props)
+  (push '(ivy-explorer--display-function :cleanup ivy-explorer--cleanup)
+        ivy-display-functions-props))
 
 (defvar ivy-explorer--posframe-buffer
   " *ivy-explorer-pos-frame-buffer*")
@@ -318,6 +319,8 @@ the menu string as `cdr'."
 (defun ivy-explorer--posframe (msg)
   (unless (require 'posframe nil t)
     (user-error "Posframe library not found"))
+  (unless (bound-and-true-p ivy-display-functions-props)
+    (user-error "Ivy version to old, use melpa version if possible"))
   (with-selected-window (ivy--get-window ivy-last)
     (posframe-show
      ivy-explorer--posframe-buffer
