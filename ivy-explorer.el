@@ -131,8 +131,8 @@ Only the background color is significant."
       (define-key map (kbd "C-j") 'ivy-explorer-alt-done)
       (define-key map (kbd "C-x d") 'ivy-explorer-dired)
 
-      (define-key map (kbd "C-x o") 'ivy-explorer-select-lv)
-      (define-key map (kbd "'") 'ivy-explorer-select-lv)
+      (define-key map (kbd "C-x o") 'ivy-explorer-other-window)
+      (define-key map (kbd "'") 'ivy-explorer-other-window)
 
       (define-key map (kbd "M-o") 'ivy-explorer-dispatching-done)
       (define-key map (kbd "C-'") 'ivy-explorer-avy)
@@ -285,7 +285,8 @@ the menu string as `cdr'."
 
 (defun ivy-explorer--lv-message (str)
   "Set ivy explorer window contents to string STR."
-  (let* ((n-lines (cl-count ?\n str))
+  (let* ((str (substring str 1))
+         (n-lines (cl-count ?\n str))
          (window-size-fixed nil)
          deactivate-mark
          golden-ratio-mode)
@@ -327,7 +328,7 @@ the menu string as `cdr'."
      :string
      (with-current-buffer (get-buffer-create " *Minibuf-1*")
        (let ((point (point))
-             (string (concat (buffer-string) "  \n" msg)))
+             (string (concat (buffer-string) " " msg)))
          (add-text-properties (- point 1) point '(face (:inherit cursor))
                               string)
          string))
@@ -656,9 +657,12 @@ Call the permanent action if possible.")
 
 ;; * Ivy explorer mode
 
-(defun ivy-explorer-select-lv ()
+(defun ivy-explorer-other-window ()
   (interactive)
-  (select-window (get-buffer-window " *ivy-explorer*")))
+  (let ((w (or (get-buffer-window " *ivy-explorer*")
+               (get-buffer-window (ivy-state-buffer ivy-last)))))
+    (when (window-live-p w)
+      (select-window w))))
 
 (defun ivy-explorer-max ()
   "Default for `ivy-explorer-max-function'."
@@ -675,7 +679,7 @@ Call the permanent action if possible.")
          (mstring (cdr menu)))
     (setq ivy-explorer--col-n mcols)
     (setq ivy-explorer--row-n mrows)
-    (funcall ivy-explorer-message-function mstring)))
+    (funcall ivy-explorer-message-function (concat "\n" mstring))))
 
 
 (defun ivy-explorer-read (prompt coll &optional avy msgf mcols width height)
@@ -704,8 +708,11 @@ MSGF is the function to be called with the grid string and defaults to
         (ivy-explorer-width (or width (frame-width)))
         (ivy-height (funcall ivy-explorer-max-function))
         (ivy-display-function #'ivy-explorer--display-function)
+        (ivy-display-functions-alist '((t . ivy-explorer--display-function)))
+        (ivy-posframe-display-functions-alist nil)
         (ivy-posframe-hide-minibuffer
          (eq ivy-explorer-message-function #'ivy-explorer--posframe))
+        (ivy-posframe--display-p t)
         (ivy-minibuffer-map (make-composed-keymap
                              ivy-explorer-map ivy-minibuffer-map)))
     (when avy
@@ -716,9 +723,12 @@ MSGF is the function to be called with the grid string and defaults to
 (defun ivy-explorer--internal (f &rest args)
   "Invoke ivy explorer for F with ARGS."
   (let ((ivy-display-function #'ivy-explorer--display-function)
+        (ivy-display-functions-alist '((t . ivy-explorer--display-function)))
+        (ivy-posframe-display-functions-alist nil)
         (completing-read-function 'ivy-completing-read)
         (ivy-posframe-hide-minibuffer
          (eq ivy-explorer-message-function #'ivy-explorer--posframe))
+        (ivy-posframe--display-p t)
         ;; max number of candidates
         (ivy-height (funcall ivy-explorer-max-function))
         (ivy-wrap nil)
